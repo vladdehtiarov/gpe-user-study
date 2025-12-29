@@ -1,257 +1,592 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
 import RatingScale from "@/components/RatingScale";
-import {
-  createSession,
-  getScenarioExplanations,
-  submitRating,
-  submitFinalSurvey,
-  ScenarioExplanations,
-  RatingInput,
-  ExplanationResult,
-} from "@/lib/api";
 
-type StudyPhase = "loading" | "analyzing" | "scenario" | "rating" | "final" | "complete";
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
-interface Ratings {
-  clarity: number | null;
-  confidence: number | null;
-  trust: number | null;
-  actionability: number | null;
+interface CreditApplication {
+  annual_income: number;
+  employment_years: number;
+  debt_to_income: number;
+  credit_score: number;
+  loan_amount: number;
+  loan_purpose: string;
 }
 
-const methodInfo: Record<string, { icon: string; label: string; color: string; bgColor: string }> = {
-  gpe: { icon: "🎯", label: "GPE (Greedy-Prune-Explain)", color: "text-emerald-400", bgColor: "bg-emerald-500/10 border-emerald-500/30" },
-  lime: { icon: "📊", label: "LIME (Feature Importance)", color: "text-orange-400", bgColor: "bg-orange-500/10 border-orange-500/30" },
-  anchors: { icon: "⚓", label: "Anchors (Rule-based)", color: "text-purple-400", bgColor: "bg-purple-500/10 border-purple-500/30" },
+interface ExplanationResult {
+  method: string;
+  conditions: string[];
+  complexity: number;
+  precision: number | null;
+  coverage: number | null;
+  time_ms: number;
+}
+
+interface CaseResult {
+  caseId: number;
+  application: CreditApplication;
+  prediction: { decision: string; probability: number };
+  explanations: Record<string, ExplanationResult>;
+}
+
+type Phase = "input" | "analyzing" | "results" | "rating" | "final" | "complete";
+
+const defaultCases: CreditApplication[] = [
+  { annual_income: 85000, employment_years: 7, debt_to_income: 0.22, credit_score: 750, loan_amount: 10000, loan_purpose: "home_improvement" },
+  { annual_income: 52000, employment_years: 2.5, debt_to_income: 0.38, credit_score: 650, loan_amount: 18000, loan_purpose: "debt_consolidation" },
+  { annual_income: 38000, employment_years: 1, debt_to_income: 0.52, credit_score: 580, loan_amount: 25000, loan_purpose: "major_purchase" },
+];
+
+const methodInfo: Record<string, { icon: string; label: string; color: string; bg: string }> = {
+  gpe: { icon: "🎯", label: "GPE", color: "text-emerald-400", bg: "bg-emerald-500/10 border-emerald-500/30" },
+  lime: { icon: "📊", label: "LIME", color: "text-orange-400", bg: "bg-orange-500/10 border-orange-500/30" },
+  anchors: { icon: "⚓", label: "Anchors", color: "text-purple-400", bg: "bg-purple-500/10 border-purple-500/30" },
 };
 
 export default function StudyPage() {
   const router = useRouter();
   
-  const [sessionId, setSessionId] = useState<string>("");
-  const [phase, setPhase] = useState<StudyPhase>("loading");
-  const [currentScenario, setCurrentScenario] = useState(1);
-  const [currentMethod, setCurrentMethod] = useState(0);
-  const [analysisStep, setAnalysisStep] = useState("");
+  const [phase, setPhase] = useState<Phase>("input");
+  const [cases, setCases] = useState<CreditApplication[]>(defaultCases);
+  const [results, setResults] = useState<CaseResult[]>([]);
   
-  const [scenarioData, setScenarioData] = useState<ScenarioExplanations | null>(null);
-  const [methodOrder, setMethodOrder] = useState<string[]>([]);
+  // Analysis progress
+  const [currentCase, setCurrentCase] = useState(0);
+  const [currentMethod, setCurrentMethod] = useState("");
+  const [analysisProgress, setAnalysisProgress] = useState<string[]>([]);
   
-  const [ratings, setRatings] = useState<Ratings>({
-    clarity: null,
-    confidence: null,
-    trust: null,
-    actionability: null,
-  });
+  // Rating state
+  const [ratingCase, setRatingCase] = useState(0);
+  const [ratingMethod, setRatingMethod] = useState(0);
+  const [ratings, setRatings] = useState({ clarity: null as number | null, trust: null as number | null });
+  const [allRatings, setAllRatings] = useState<any[]>([]);
   
+  // Final survey
   const [finalSurvey, setFinalSurvey] = useState({
-    gpe_rank: 0,
-    lime_rank: 0,
-    anchors_rank: 0,
     preferred_method: "",
-    ml_familiarity: null as number | null,
     feedback: "",
   });
-  
-  const [allRatings, setAllRatings] = useState<RatingInput[]>([]);
 
-  // Initialize session and load first scenario
-  useEffect(() => {
-    const init = async () => {
-      try {
-        setPhase("loading");
-        setAnalysisStep("🔄 Creating study session...");
-        
-        const session = await createSession(navigator.userAgent);
-        setSessionId(session.session_id);
-        
-        await loadScenario(1);
-      } catch (error) {
-        console.error("Failed to initialize:", error);
-        setAnalysisStep("❌ Failed to connect to server. Make sure backend is running!");
-      }
-    };
-    init();
-  }, []);
-
-  const loadScenario = async (scenarioId: number) => {
-    setPhase("analyzing");
-    
-    // Show analysis steps
-    setAnalysisStep("🔮 Loading credit application data...");
-    await new Promise(r => setTimeout(r, 500));
-    
-    setAnalysisStep("🤖 Running Decision Tree model...");
-    await new Promise(r => setTimeout(r, 400));
-    
-    setAnalysisStep("🎯 Running GPE (Greedy-Prune-Explain)...");
-    await new Promise(r => setTimeout(r, 300));
-    
-    setAnalysisStep("📊 Running LIME explanation...");
-    await new Promise(r => setTimeout(r, 300));
-    
-    setAnalysisStep("⚓ Running Anchors explanation...");
-    
-    try {
-      const data = await getScenarioExplanations(scenarioId);
-      setScenarioData(data);
-      
-      // Get method order from mapping
-      const methods = Object.entries(data.method_mapping).map(([key, method]) => ({
-        key,
-        method: method as string
-      }));
-      setMethodOrder(methods.map(m => m.method));
-      
-      setAnalysisStep("✅ Analysis complete!");
-      await new Promise(r => setTimeout(r, 500));
-      
-      setPhase("scenario");
-    } catch (error) {
-      console.error("Failed to load scenario:", error);
-      setAnalysisStep("❌ Failed to analyze. Is the backend running on localhost:8000?");
-    }
+  const updateCase = (index: number, field: keyof CreditApplication, value: number | string) => {
+    const newCases = [...cases];
+    newCases[index] = { ...newCases[index], [field]: value };
+    setCases(newCases);
   };
 
-  const handleRatingComplete = () => {
-    if (!scenarioData || !sessionId) return;
+  const analyzeAll = async () => {
+    setPhase("analyzing");
+    setAnalysisProgress([]);
+    const newResults: CaseResult[] = [];
     
-    const actualMethod = methodOrder[currentMethod];
+    for (let i = 0; i < cases.length; i++) {
+      setCurrentCase(i + 1);
+      
+      // Show progress for each method
+      setCurrentMethod("model");
+      setAnalysisProgress(prev => [...prev, `Case ${i + 1}: 🤖 Running Decision Tree model...`]);
+      await new Promise(r => setTimeout(r, 300));
+      
+      setCurrentMethod("gpe");
+      setAnalysisProgress(prev => [...prev, `Case ${i + 1}: 🎯 Running GPE (Greedy-Prune-Explain)...`]);
+      await new Promise(r => setTimeout(r, 200));
+      
+      setCurrentMethod("lime");
+      setAnalysisProgress(prev => [...prev, `Case ${i + 1}: 📊 Running LIME...`]);
+      await new Promise(r => setTimeout(r, 200));
+      
+      setCurrentMethod("anchors");
+      setAnalysisProgress(prev => [...prev, `Case ${i + 1}: ⚓ Running Anchors...`]);
+      
+      try {
+        const response = await fetch(`${API_URL}/api/explain`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...cases[i], scenario_id: i }),
+        });
+        
+        const data = await response.json();
+        
+        newResults.push({
+          caseId: i + 1,
+          application: cases[i],
+          prediction: data.prediction,
+          explanations: data.explanations,
+        });
+        
+        setAnalysisProgress(prev => [...prev, `Case ${i + 1}: ✅ Complete!`]);
+      } catch (error) {
+        setAnalysisProgress(prev => [...prev, `Case ${i + 1}: ❌ Error!`]);
+      }
+      
+      await new Promise(r => setTimeout(r, 500));
+    }
     
-    const rating: RatingInput = {
-      session_id: sessionId,
-      scenario_id: currentScenario,
-      method: actualMethod,
-      clarity: ratings.clarity!,
-      confidence: ratings.confidence!,
-      trust: ratings.trust!,
-      actionability: ratings.actionability!,
-    };
+    setResults(newResults);
+    setAnalysisProgress(prev => [...prev, "🎉 All cases analyzed!"]);
+    await new Promise(r => setTimeout(r, 1000));
+    setPhase("results");
+  };
+
+  const startRating = () => {
+    setRatingCase(0);
+    setRatingMethod(0);
+    setPhase("rating");
+  };
+
+  const submitRating = () => {
+    const result = results[ratingCase];
+    const methods = Object.keys(result.explanations);
+    const method = methods[ratingMethod];
     
-    setAllRatings([...allRatings, rating]);
-    setRatings({ clarity: null, confidence: null, trust: null, actionability: null });
+    setAllRatings([...allRatings, {
+      caseId: ratingCase + 1,
+      method,
+      ...ratings,
+    }]);
     
-    if (currentMethod < methodOrder.length - 1) {
-      setCurrentMethod(currentMethod + 1);
-    } else if (currentScenario < 3) {
-      setCurrentScenario(currentScenario + 1);
-      setCurrentMethod(0);
-      loadScenario(currentScenario + 1);
+    setRatings({ clarity: null, trust: null });
+    
+    // Move to next
+    if (ratingMethod < methods.length - 1) {
+      setRatingMethod(ratingMethod + 1);
+    } else if (ratingCase < results.length - 1) {
+      setRatingCase(ratingCase + 1);
+      setRatingMethod(0);
     } else {
       setPhase("final");
     }
   };
 
-  const handleFinalSubmit = async () => {
-    try {
-      for (const rating of allRatings) {
-        await submitRating(rating);
-      }
-      
-      await submitFinalSurvey({
-        session_id: sessionId,
-        gpe_rank: finalSurvey.gpe_rank,
-        lime_rank: finalSurvey.lime_rank,
-        anchors_rank: finalSurvey.anchors_rank,
-        preferred_method: finalSurvey.preferred_method,
-        ml_familiarity: finalSurvey.ml_familiarity || undefined,
-        feedback: finalSurvey.feedback || undefined,
-      });
-      
-      setPhase("complete");
-    } catch (error) {
-      console.error("Failed to submit:", error);
-    }
+  const submitFinal = () => {
+    // In real implementation, send to backend
+    console.log("Ratings:", allRatings);
+    console.log("Final:", finalSurvey);
+    setPhase("complete");
   };
 
-  const isRatingComplete = ratings.clarity && ratings.confidence && ratings.trust && ratings.actionability;
-  const isFinalComplete = finalSurvey.gpe_rank > 0 && finalSurvey.lime_rank > 0 && finalSurvey.anchors_rank > 0 && finalSurvey.preferred_method;
-
-  const totalSteps = 3 * 3 + 1;
-  const currentStep = (currentScenario - 1) * 3 + currentMethod + 1;
-
-  // Get current explanation for rating phase
-  const getCurrentExplanation = (): ExplanationResult | null => {
-    if (!scenarioData) return null;
-    const method = methodOrder[currentMethod];
-    // Find the explanation that matches this method
-    for (const exp of Object.values(scenarioData.explanations)) {
-      if (exp.method === method) return exp;
-    }
-    return null;
-  };
-
-  // LOADING / ANALYZING
-  if (phase === "loading" || phase === "analyzing") {
+  // ========== INPUT PHASE ==========
+  if (phase === "input") {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900 flex items-center justify-center p-8">
-        <div className="max-w-md w-full text-center">
-          <div className="mb-8">
-            <div className="w-20 h-20 mx-auto mb-6 relative">
-              <div className="absolute inset-0 bg-blue-500/20 rounded-full animate-ping"></div>
-              <div className="absolute inset-2 bg-blue-500/40 rounded-full animate-pulse"></div>
-              <div className="absolute inset-4 bg-blue-500 rounded-full flex items-center justify-center">
-                <span className="text-2xl">🔬</span>
-              </div>
-            </div>
-            <h2 className="text-2xl font-bold text-white mb-4">
-              {phase === "loading" ? "Setting Up Study..." : "Analyzing Scenario..."}
-            </h2>
+      <main className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900 p-6">
+        <div className="max-w-6xl mx-auto">
+          <div className="text-center mb-8">
+            <h1 className="text-3xl font-bold text-white mb-2">
+              📝 Enter 3 Credit Applications
+            </h1>
+            <p className="text-gray-400">
+              Fill in 3 different credit scenarios to analyze
+            </p>
           </div>
           
-          <div className="bg-white/5 backdrop-blur rounded-xl p-6 border border-white/10">
-            <div className="text-blue-300 font-mono text-sm animate-pulse">
-              {analysisStep}
-            </div>
-            
-            {phase === "analyzing" && (
-              <div className="mt-4 flex gap-1 justify-center">
-                {["GPE", "LIME", "Anchors"].map((name, i) => (
-                  <div 
-                    key={name}
-                    className={`px-3 py-1 rounded-full text-xs font-medium transition-all duration-500 ${
-                      analysisStep.includes(name) || analysisStep.includes("complete")
-                        ? "bg-green-500/20 text-green-400"
-                        : "bg-white/10 text-gray-500"
-                    }`}
-                  >
-                    {analysisStep.includes(name) && !analysisStep.includes("complete") ? "⚡" : 
-                     analysisStep.includes("complete") ? "✓" : "○"} {name}
+          <div className="grid lg:grid-cols-3 gap-6 mb-8">
+            {cases.map((c, i) => (
+              <div key={i} className="bg-white/5 backdrop-blur rounded-2xl p-6 border border-white/10">
+                <h3 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
+                  <span className="w-8 h-8 bg-blue-500 rounded-full flex items-center justify-center text-sm">
+                    {i + 1}
+                  </span>
+                  Case {i + 1}
+                </h3>
+                
+                <div className="space-y-4">
+                  <div>
+                    <label className="text-sm text-gray-400">Annual Income ($)</label>
+                    <input
+                      type="number"
+                      value={c.annual_income}
+                      onChange={(e) => updateCase(i, "annual_income", Number(e.target.value))}
+                      className="w-full mt-1 bg-white/10 border border-white/20 rounded-lg px-3 py-2 text-white"
+                    />
                   </div>
-                ))}
+                  
+                  <div>
+                    <label className="text-sm text-gray-400">Employment (years)</label>
+                    <input
+                      type="number"
+                      step="0.5"
+                      value={c.employment_years}
+                      onChange={(e) => updateCase(i, "employment_years", Number(e.target.value))}
+                      className="w-full mt-1 bg-white/10 border border-white/20 rounded-lg px-3 py-2 text-white"
+                    />
+                  </div>
+                  
+                  <div>
+                    <label className="text-sm text-gray-400">Debt-to-Income: {(c.debt_to_income * 100).toFixed(0)}%</label>
+                    <input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.01"
+                      value={c.debt_to_income}
+                      onChange={(e) => updateCase(i, "debt_to_income", Number(e.target.value))}
+                      className="w-full mt-1"
+                    />
+                  </div>
+                  
+                  <div>
+                    <label className="text-sm text-gray-400">Credit Score: {c.credit_score}</label>
+                    <input
+                      type="range"
+                      min="300"
+                      max="850"
+                      value={c.credit_score}
+                      onChange={(e) => updateCase(i, "credit_score", Number(e.target.value))}
+                      className="w-full mt-1"
+                    />
+                  </div>
+                  
+                  <div>
+                    <label className="text-sm text-gray-400">Loan Amount ($)</label>
+                    <input
+                      type="number"
+                      value={c.loan_amount}
+                      onChange={(e) => updateCase(i, "loan_amount", Number(e.target.value))}
+                      className="w-full mt-1 bg-white/10 border border-white/20 rounded-lg px-3 py-2 text-white"
+                    />
+                  </div>
+                  
+                  <div>
+                    <label className="text-sm text-gray-400">Purpose</label>
+                    <select
+                      value={c.loan_purpose}
+                      onChange={(e) => updateCase(i, "loan_purpose", e.target.value)}
+                      className="w-full mt-1 bg-white/10 border border-white/20 rounded-lg px-3 py-2 text-white"
+                    >
+                      <option value="debt_consolidation">Debt Consolidation</option>
+                      <option value="home_improvement">Home Improvement</option>
+                      <option value="major_purchase">Major Purchase</option>
+                      <option value="medical">Medical</option>
+                      <option value="car">Car</option>
+                    </select>
+                  </div>
+                </div>
               </div>
-            )}
+            ))}
           </div>
           
-          <p className="text-gray-500 text-sm mt-6">
-            Real AI frameworks are analyzing the credit application...
-          </p>
+          <button
+            onClick={analyzeAll}
+            className="w-full py-4 bg-gradient-to-r from-blue-500 to-cyan-500 text-white rounded-xl font-bold text-xl hover:shadow-lg hover:shadow-blue-500/25 transition flex items-center justify-center gap-3"
+          >
+            🚀 Analyze All 3 Cases with GPE, LIME & Anchors
+          </button>
         </div>
-      </div>
+      </main>
     );
   }
 
-  // COMPLETE
+  // ========== ANALYZING PHASE ==========
+  if (phase === "analyzing") {
+    return (
+      <main className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900 flex items-center justify-center p-6">
+        <div className="max-w-2xl w-full">
+          <div className="text-center mb-8">
+            <div className="w-24 h-24 mx-auto mb-6 relative">
+              <div className="absolute inset-0 bg-blue-500/20 rounded-full animate-ping"></div>
+              <div className="absolute inset-2 bg-blue-500/40 rounded-full animate-pulse"></div>
+              <div className="absolute inset-4 bg-blue-500 rounded-full flex items-center justify-center">
+                <span className="text-3xl">🔬</span>
+              </div>
+            </div>
+            <h2 className="text-2xl font-bold text-white mb-2">
+              Analyzing Case {currentCase} of 3
+            </h2>
+            <p className="text-gray-400">
+              Running real AI frameworks...
+            </p>
+          </div>
+          
+          {/* Progress indicators */}
+          <div className="flex justify-center gap-4 mb-8">
+            {["gpe", "lime", "anchors"].map((m) => {
+              const info = methodInfo[m];
+              const isActive = currentMethod === m;
+              const isDone = analysisProgress.some(p => p.includes("Complete") && p.includes(`Case ${currentCase}`));
+              
+              return (
+                <div
+                  key={m}
+                  className={`px-4 py-2 rounded-full text-sm font-medium transition-all ${
+                    isActive ? `${info.bg} ${info.color} scale-110` :
+                    isDone ? "bg-green-500/20 text-green-400" :
+                    "bg-white/10 text-gray-500"
+                  }`}
+                >
+                  {info.icon} {info.label}
+                </div>
+              );
+            })}
+          </div>
+          
+          {/* Log */}
+          <div className="bg-black/30 rounded-xl p-4 font-mono text-sm max-h-64 overflow-y-auto">
+            {analysisProgress.map((line, i) => (
+              <div key={i} className={`mb-1 ${
+                line.includes("✅") ? "text-green-400" :
+                line.includes("❌") ? "text-red-400" :
+                line.includes("🎉") ? "text-yellow-400" :
+                "text-blue-300"
+              }`}>
+                {line}
+              </div>
+            ))}
+            <div className="animate-pulse text-gray-500">▌</div>
+          </div>
+        </div>
+      </main>
+    );
+  }
+
+  // ========== RESULTS PHASE ==========
+  if (phase === "results") {
+    return (
+      <main className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900 p-6">
+        <div className="max-w-7xl mx-auto">
+          <div className="text-center mb-8">
+            <h1 className="text-3xl font-bold text-white mb-2">
+              🎉 Analysis Complete!
+            </h1>
+            <p className="text-gray-400">
+              Review the results from all 3 AI explanation methods
+            </p>
+          </div>
+          
+          {results.map((result, i) => (
+            <div key={i} className="mb-8 bg-white/5 backdrop-blur rounded-2xl p-6 border border-white/10">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-xl font-bold text-white">
+                  Case {result.caseId}: ${result.application.annual_income.toLocaleString()} income, {result.application.credit_score} score
+                </h2>
+                <span className={`px-4 py-2 rounded-full font-bold ${
+                  result.prediction.decision === "approved" 
+                    ? "bg-green-500/20 text-green-400" 
+                    : "bg-red-500/20 text-red-400"
+                }`}>
+                  {result.prediction.decision === "approved" ? "✓ APPROVED" : "✗ DENIED"}
+                </span>
+              </div>
+              
+              <div className="grid md:grid-cols-3 gap-4">
+                {Object.entries(result.explanations).map(([key, exp]) => {
+                  const info = methodInfo[exp.method] || methodInfo.gpe;
+                  
+                  return (
+                    <div key={key} className={`rounded-xl p-4 border ${info.bg}`}>
+                      <div className="flex items-center justify-between mb-3">
+                        <span className={`font-bold ${info.color}`}>
+                          {info.icon} {info.label}
+                        </span>
+                        <span className="text-xs text-gray-400 font-mono">
+                          {exp.time_ms.toFixed(1)}ms
+                        </span>
+                      </div>
+                      
+                      {exp.method === "lime" ? (
+                        <div className="text-sm text-gray-300 space-y-1">
+                          {exp.conditions.slice(0, 3).map((c, j) => (
+                            <div key={j} className="truncate">{c}</div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="font-mono text-xs bg-black/20 rounded-lg p-3">
+                          <span className={info.color}>IF </span>
+                          {exp.conditions.slice(0, 2).join(" AND ")}
+                          <span className={info.color}> THEN </span>
+                          {result.prediction.decision}
+                        </div>
+                      )}
+                      
+                      <div className="mt-3 text-xs text-gray-400">
+                        Complexity: {exp.complexity}
+                        {exp.precision && ` • Precision: ${(exp.precision * 100).toFixed(0)}%`}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+          
+          <button
+            onClick={startRating}
+            className="w-full py-4 bg-gradient-to-r from-green-500 to-emerald-500 text-white rounded-xl font-bold text-xl hover:shadow-lg transition"
+          >
+            📊 Rate the Explanations →
+          </button>
+        </div>
+      </main>
+    );
+  }
+
+  // ========== RATING PHASE ==========
+  if (phase === "rating" && results.length > 0) {
+    const result = results[ratingCase];
+    const methods = Object.keys(result.explanations);
+    const method = methods[ratingMethod];
+    const exp = result.explanations[method];
+    const info = methodInfo[exp.method] || methodInfo.gpe;
+    
+    const progress = (ratingCase * 3 + ratingMethod + 1) / (results.length * 3);
+    
+    return (
+      <main className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900 p-6">
+        <div className="max-w-2xl mx-auto">
+          {/* Progress */}
+          <div className="mb-6">
+            <div className="flex justify-between text-sm text-gray-400 mb-2">
+              <span>Case {ratingCase + 1}, Method {ratingMethod + 1}/3</span>
+              <span>{Math.round(progress * 100)}%</span>
+            </div>
+            <div className="h-2 bg-white/10 rounded-full overflow-hidden">
+              <div 
+                className="h-full bg-gradient-to-r from-blue-500 to-cyan-500 transition-all"
+                style={{ width: `${progress * 100}%` }}
+              />
+            </div>
+          </div>
+          
+          <div className="bg-white/5 backdrop-blur rounded-2xl p-8 border border-white/10">
+            <h2 className="text-2xl font-bold text-white mb-2 flex items-center gap-3">
+              <span className="text-3xl">{info.icon}</span>
+              Rate: {info.label}
+            </h2>
+            <p className="text-gray-400 mb-6">
+              Case {ratingCase + 1}: ${result.application.annual_income.toLocaleString()} income → 
+              <span className={result.prediction.decision === "approved" ? "text-green-400" : "text-red-400"}>
+                {" "}{result.prediction.decision.toUpperCase()}
+              </span>
+            </p>
+            
+            {/* Explanation preview */}
+            <div className={`rounded-xl p-4 mb-8 border ${info.bg}`}>
+              {exp.method === "lime" ? (
+                <div className="text-sm text-gray-300">
+                  {exp.conditions.slice(0, 4).map((c, i) => (
+                    <div key={i}>{c}</div>
+                  ))}
+                </div>
+              ) : (
+                <div className="font-mono text-sm">
+                  <span className={info.color}>IF </span>
+                  {exp.conditions.join(" AND ")}
+                  <span className={info.color}> THEN </span>
+                  {result.prediction.decision}
+                </div>
+              )}
+            </div>
+            
+            <RatingScale
+              label="How CLEAR is this explanation?"
+              value={ratings.clarity}
+              onChange={(v) => setRatings({ ...ratings, clarity: v })}
+              minLabel="Very Unclear"
+              maxLabel="Very Clear"
+            />
+            
+            <RatingScale
+              label="How much do you TRUST this explanation?"
+              value={ratings.trust}
+              onChange={(v) => setRatings({ ...ratings, trust: v })}
+              minLabel="No Trust"
+              maxLabel="Full Trust"
+            />
+            
+            <button
+              onClick={submitRating}
+              disabled={!ratings.clarity || !ratings.trust}
+              className={`w-full py-4 rounded-xl font-bold text-lg transition ${
+                ratings.clarity && ratings.trust
+                  ? "bg-gradient-to-r from-blue-500 to-cyan-500 text-white hover:shadow-lg"
+                  : "bg-gray-700 text-gray-500 cursor-not-allowed"
+              }`}
+            >
+              Next →
+            </button>
+          </div>
+        </div>
+      </main>
+    );
+  }
+
+  // ========== FINAL PHASE ==========
+  if (phase === "final") {
+    return (
+      <main className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900 p-6">
+        <div className="max-w-2xl mx-auto">
+          <div className="bg-white/5 backdrop-blur rounded-2xl p-8 border border-white/10">
+            <h2 className="text-2xl font-bold text-white mb-6">🏆 Final Question</h2>
+            
+            <p className="text-gray-300 mb-6">Which explanation method did you find MOST helpful overall?</p>
+            
+            <div className="space-y-3 mb-8">
+              {Object.entries(methodInfo).map(([key, info]) => (
+                <button
+                  key={key}
+                  onClick={() => setFinalSurvey({ ...finalSurvey, preferred_method: key })}
+                  className={`w-full p-4 rounded-xl border text-left transition flex items-center gap-3 ${
+                    finalSurvey.preferred_method === key
+                      ? `${info.bg} border-2`
+                      : "bg-white/5 border-white/10 hover:bg-white/10"
+                  }`}
+                >
+                  <span className="text-2xl">{info.icon}</span>
+                  <span className={`font-bold ${finalSurvey.preferred_method === key ? info.color : "text-white"}`}>
+                    {info.label}
+                  </span>
+                </button>
+              ))}
+            </div>
+            
+            <div className="mb-8">
+              <label className="text-gray-300 block mb-2">Any feedback? (optional)</label>
+              <textarea
+                value={finalSurvey.feedback}
+                onChange={(e) => setFinalSurvey({ ...finalSurvey, feedback: e.target.value })}
+                className="w-full p-4 bg-white/10 border border-white/20 rounded-xl text-white"
+                rows={3}
+                placeholder="What did you like or dislike about each method?"
+              />
+            </div>
+            
+            <button
+              onClick={submitFinal}
+              disabled={!finalSurvey.preferred_method}
+              className={`w-full py-4 rounded-xl font-bold text-lg transition ${
+                finalSurvey.preferred_method
+                  ? "bg-gradient-to-r from-green-500 to-emerald-500 text-white hover:shadow-lg"
+                  : "bg-gray-700 text-gray-500 cursor-not-allowed"
+              }`}
+            >
+              Submit ✓
+            </button>
+          </div>
+        </div>
+      </main>
+    );
+  }
+
+  // ========== COMPLETE PHASE ==========
   if (phase === "complete") {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900 flex items-center justify-center p-8">
+      <main className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900 flex items-center justify-center p-6">
         <div className="max-w-2xl w-full text-center">
           <div className="text-8xl mb-6">🎉</div>
           <h1 className="text-4xl font-bold text-white mb-4">Thank You!</h1>
           <p className="text-xl text-gray-300 mb-8">
-            Your responses have been recorded and will help improve explainable AI systems.
+            Your feedback will help improve explainable AI systems.
           </p>
+          
           <div className="bg-white/5 rounded-2xl p-6 mb-8 border border-white/10">
             <p className="text-gray-400">
-              You evaluated <span className="text-white font-bold">{allRatings.length}</span> explanations 
-              from <span className="text-emerald-400 font-bold">GPE</span>, 
-              <span className="text-orange-400 font-bold"> LIME</span>, and 
-              <span className="text-purple-400 font-bold"> Anchors</span>.
+              You rated <span className="text-white font-bold">{allRatings.length}</span> explanations
+              and preferred <span className={`font-bold ${methodInfo[finalSurvey.preferred_method]?.color}`}>
+                {methodInfo[finalSurvey.preferred_method]?.icon} {methodInfo[finalSurvey.preferred_method]?.label}
+              </span>
             </p>
           </div>
+          
           <button
             onClick={() => router.push("/")}
             className="px-8 py-4 bg-gradient-to-r from-blue-500 to-cyan-500 text-white rounded-xl font-bold hover:shadow-lg transition"
@@ -259,352 +594,9 @@ export default function StudyPage() {
             Return to Home
           </button>
         </div>
-      </div>
+      </main>
     );
   }
 
-  return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900 p-6">
-      <div className="max-w-6xl mx-auto">
-        {/* Progress */}
-        <div className="mb-6">
-          <div className="flex justify-between text-sm text-gray-400 mb-2">
-            <span>Scenario {currentScenario} of 3</span>
-            <span>{phase === "final" ? totalSteps : currentStep} / {totalSteps}</span>
-          </div>
-          <div className="h-2 bg-white/10 rounded-full overflow-hidden">
-            <div 
-              className="h-full bg-gradient-to-r from-blue-500 to-cyan-500 transition-all duration-500"
-              style={{ width: `${((phase === "final" ? totalSteps : currentStep) / totalSteps) * 100}%` }}
-            />
-          </div>
-        </div>
-
-        {/* SCENARIO PHASE */}
-        {phase === "scenario" && scenarioData && (
-          <div className="animate-fade-in">
-            {/* Scenario Header */}
-            <div className="bg-white/5 backdrop-blur rounded-2xl p-6 mb-6 border border-white/10">
-              <h2 className="text-2xl font-bold text-white mb-2">
-                Scenario {currentScenario}: {scenarioData.scenario.name}
-              </h2>
-              <p className="text-gray-400 mb-6">{scenarioData.scenario.description}</p>
-              
-              {/* Application Data - WITH ACTUAL VALUES */}
-              <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-6">
-                <div className="bg-white/5 rounded-xl p-4">
-                  <div className="text-sm text-gray-500">Annual Income</div>
-                  <div className="text-xl font-bold text-white">
-                    ${scenarioData.scenario.application.annual_income.toLocaleString()}
-                  </div>
-                </div>
-                <div className="bg-white/5 rounded-xl p-4">
-                  <div className="text-sm text-gray-500">Employment</div>
-                  <div className="text-xl font-bold text-white">
-                    {scenarioData.scenario.application.employment_years} years
-                  </div>
-                </div>
-                <div className="bg-white/5 rounded-xl p-4">
-                  <div className="text-sm text-gray-500">Debt-to-Income</div>
-                  <div className="text-xl font-bold text-white">
-                    {(scenarioData.scenario.application.debt_to_income * 100).toFixed(0)}%
-                  </div>
-                </div>
-                <div className="bg-white/5 rounded-xl p-4">
-                  <div className="text-sm text-gray-500">Credit Score</div>
-                  <div className="text-xl font-bold text-white">
-                    {scenarioData.scenario.application.credit_score}
-                  </div>
-                </div>
-                <div className="bg-white/5 rounded-xl p-4">
-                  <div className="text-sm text-gray-500">Loan Amount</div>
-                  <div className="text-xl font-bold text-white">
-                    ${scenarioData.scenario.application.loan_amount.toLocaleString()}
-                  </div>
-                </div>
-                <div className="bg-white/5 rounded-xl p-4">
-                  <div className="text-sm text-gray-500">Purpose</div>
-                  <div className="text-xl font-bold text-white capitalize">
-                    {scenarioData.scenario.application.loan_purpose.replace("_", " ")}
-                  </div>
-                </div>
-              </div>
-
-              {/* Decision */}
-              <div className={`
-                inline-flex items-center gap-3 px-6 py-3 rounded-xl font-bold text-xl
-                ${scenarioData.prediction.decision === "approved" 
-                  ? "bg-green-500/20 text-green-400 border border-green-500/30" 
-                  : "bg-red-500/20 text-red-400 border border-red-500/30"}
-              `}>
-                {scenarioData.prediction.decision === "approved" ? "✓" : "✗"}
-                Decision: {scenarioData.prediction.decision.toUpperCase()}
-                <span className="text-sm font-normal opacity-75">
-                  ({(scenarioData.prediction.probability * 100).toFixed(0)}% confidence)
-                </span>
-              </div>
-            </div>
-
-            {/* Explanations */}
-            <h3 className="text-xl font-bold text-white mb-4 flex items-center gap-2">
-              🔍 Compare explanations from 3 different AI methods:
-            </h3>
-            
-            <div className="grid md:grid-cols-3 gap-4 mb-6">
-              {Object.entries(scenarioData.explanations).map(([key, exp]) => {
-                const info = methodInfo[exp.method] || methodInfo.gpe;
-                const isRule = exp.method === "gpe" || exp.method === "anchors";
-                
-                return (
-                  <div key={key} className={`rounded-2xl p-5 border ${info.bgColor}`}>
-                    {/* Header */}
-                    <div className="flex items-center justify-between mb-4">
-                      <div className="flex items-center gap-2">
-                        <span className="text-xl">{info.icon}</span>
-                        <span className={`font-bold ${info.color}`}>{info.label}</span>
-                      </div>
-                      <span className="text-xs text-gray-400 font-mono bg-black/20 px-2 py-1 rounded">
-                        {exp.time_ms.toFixed(1)}ms
-                      </span>
-                    </div>
-                    
-                    {/* Content */}
-                    {isRule ? (
-                      <div className="font-mono text-sm bg-black/20 rounded-xl p-4 mb-3">
-                        <span className={`font-bold ${info.color}`}>IF</span>
-                        <div className="ml-2 mt-2 space-y-1">
-                          {exp.conditions.slice(0, 4).map((cond, idx) => (
-                            <div key={idx} className="text-gray-300 text-xs">
-                              {idx > 0 && <span className={`font-bold ${info.color}`}>AND </span>}
-                              <span className="bg-white/10 px-2 py-0.5 rounded">{cond}</span>
-                            </div>
-                          ))}
-                        </div>
-                        <div className="mt-2">
-                          <span className={`font-bold ${info.color}`}>THEN </span>
-                          <span className="text-white font-semibold">
-                            {scenarioData.prediction.decision === "approved" ? "✓ Approved" : "✗ Denied"}
-                          </span>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="space-y-2 mb-3">
-                        {exp.conditions.slice(0, 4).map((cond, idx) => {
-                          const match = cond.match(/([+-]?\d+\.\d+)/);
-                          const weight = match ? parseFloat(match[1]) : 0;
-                          const isPositive = weight > 0;
-                          
-                          return (
-                            <div key={idx} className="flex items-center gap-2 text-xs">
-                              <div className="w-24 text-gray-400 truncate">{cond.split(":")[0]}</div>
-                              <div className={`h-2 rounded ${isPositive ? "bg-green-500" : "bg-red-500"}`}
-                                   style={{ width: `${Math.min(Math.abs(weight) * 100, 60)}px` }} />
-                              <span className={isPositive ? "text-green-400" : "text-red-400"}>
-                                {weight > 0 ? "+" : ""}{weight.toFixed(2)}
-                              </span>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                    
-                    {/* Metrics */}
-                    <div className="text-xs text-gray-400 flex gap-3">
-                      <span>Complexity: <span className="text-white">{exp.complexity}</span></span>
-                      {exp.precision && (
-                        <span>Precision: <span className={info.color}>{(exp.precision * 100).toFixed(0)}%</span></span>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-
-            <button
-              onClick={() => setPhase("rating")}
-              className="w-full py-4 bg-gradient-to-r from-blue-500 to-cyan-500 text-white rounded-xl font-bold text-lg hover:shadow-lg hover:shadow-blue-500/25 transition"
-            >
-              Rate These Explanations →
-            </button>
-          </div>
-        )}
-
-        {/* RATING PHASE */}
-        {phase === "rating" && scenarioData && (
-          <div className="animate-fade-in">
-            <div className="bg-white/5 backdrop-blur rounded-2xl p-8 border border-white/10">
-              {(() => {
-                const currentExp = getCurrentExplanation();
-                const info = currentExp ? (methodInfo[currentExp.method] || methodInfo.gpe) : methodInfo.gpe;
-                
-                return (
-                  <>
-                    <h2 className="text-2xl font-bold text-white mb-2 flex items-center gap-3">
-                      <span className="text-3xl">{info.icon}</span>
-                      Rate: {info.label}
-                    </h2>
-                    <p className="text-gray-400 mb-6">
-                      Method {currentMethod + 1} of {methodOrder.length} for Scenario {currentScenario}
-                    </p>
-                    
-                    {/* Show the explanation being rated */}
-                    {currentExp && (
-                      <div className={`rounded-xl p-4 mb-8 border ${info.bgColor}`}>
-                        {currentExp.method === "gpe" || currentExp.method === "anchors" ? (
-                          <div className="font-mono text-sm">
-                            <span className={`font-bold ${info.color}`}>IF </span>
-                            {currentExp.conditions.join(" AND ")}
-                            <span className={`font-bold ${info.color}`}> THEN </span>
-                            {scenarioData.prediction.decision}
-                          </div>
-                        ) : (
-                          <div className="text-sm text-gray-300">
-                            {currentExp.conditions.slice(0, 4).join(" | ")}
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </>
-                );
-              })()}
-
-              <div className="space-y-6">
-                <RatingScale
-                  label="Clarity"
-                  description="How clear and easy to understand is this explanation?"
-                  value={ratings.clarity}
-                  onChange={(v) => setRatings({ ...ratings, clarity: v })}
-                  minLabel="Very Unclear"
-                  maxLabel="Very Clear"
-                />
-                <RatingScale
-                  label="Confidence"
-                  description="How confident are you that you understand the decision?"
-                  value={ratings.confidence}
-                  onChange={(v) => setRatings({ ...ratings, confidence: v })}
-                  minLabel="Not Confident"
-                  maxLabel="Very Confident"
-                />
-                <RatingScale
-                  label="Trust"
-                  description="How much do you trust this explanation?"
-                  value={ratings.trust}
-                  onChange={(v) => setRatings({ ...ratings, trust: v })}
-                  minLabel="No Trust"
-                  maxLabel="Full Trust"
-                />
-                <RatingScale
-                  label="Actionability"
-                  description="Does it help you understand what to change?"
-                  value={ratings.actionability}
-                  onChange={(v) => setRatings({ ...ratings, actionability: v })}
-                  minLabel="Not Helpful"
-                  maxLabel="Very Helpful"
-                />
-              </div>
-
-              <button
-                onClick={handleRatingComplete}
-                disabled={!isRatingComplete}
-                className={`
-                  mt-8 w-full py-4 rounded-xl font-bold text-lg transition
-                  ${isRatingComplete
-                    ? "bg-gradient-to-r from-blue-500 to-cyan-500 text-white hover:shadow-lg"
-                    : "bg-gray-700 text-gray-500 cursor-not-allowed"}
-                `}
-              >
-                {currentMethod < methodOrder.length - 1 ? "Next Method →" :
-                 currentScenario < 3 ? "Next Scenario →" : "Final Survey →"}
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* FINAL SURVEY */}
-        {phase === "final" && (
-          <div className="animate-fade-in">
-            <div className="bg-white/5 backdrop-blur rounded-2xl p-8 border border-white/10">
-              <h2 className="text-2xl font-bold text-white mb-6">Final Survey</h2>
-              
-              <div className="mb-8">
-                <h3 className="font-semibold text-white mb-4">
-                  Rank the explanation methods (1 = Best, 3 = Worst):
-                </h3>
-                {[
-                  { key: "gpe", label: "🎯 GPE (Rule-based)" },
-                  { key: "lime", label: "📊 LIME (Feature weights)" },
-                  { key: "anchors", label: "⚓ Anchors (Rule-based)" },
-                ].map(({ key, label }) => (
-                  <div key={key} className="flex items-center gap-4 mb-3">
-                    <span className="w-48 text-gray-300">{label}</span>
-                    <div className="flex gap-2">
-                      {[1, 2, 3].map((rank) => (
-                        <button
-                          key={rank}
-                          onClick={() => setFinalSurvey({ ...finalSurvey, [`${key}_rank`]: rank })}
-                          className={`w-10 h-10 rounded-full border-2 font-bold transition ${
-                            finalSurvey[`${key}_rank` as keyof typeof finalSurvey] === rank
-                              ? "bg-blue-500 border-blue-500 text-white"
-                              : "border-gray-600 text-gray-400 hover:border-blue-400"
-                          }`}
-                        >
-                          {rank}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              <div className="mb-8">
-                <h3 className="font-semibold text-white mb-4">Overall preference:</h3>
-                <div className="flex flex-wrap gap-3">
-                  {[
-                    { key: "gpe", label: "🎯 GPE" },
-                    { key: "lime", label: "📊 LIME" },
-                    { key: "anchors", label: "⚓ Anchors" },
-                  ].map(({ key, label }) => (
-                    <button
-                      key={key}
-                      onClick={() => setFinalSurvey({ ...finalSurvey, preferred_method: key })}
-                      className={`px-6 py-3 rounded-xl font-medium transition ${
-                        finalSurvey.preferred_method === key
-                          ? "bg-blue-500 text-white"
-                          : "bg-white/10 text-gray-300 hover:bg-white/20"
-                      }`}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="mb-8">
-                <label className="font-semibold text-white block mb-2">Feedback (optional):</label>
-                <textarea
-                  value={finalSurvey.feedback}
-                  onChange={(e) => setFinalSurvey({ ...finalSurvey, feedback: e.target.value })}
-                  className="w-full p-4 bg-white/10 border border-white/20 rounded-xl text-white placeholder-gray-500 focus:ring-2 focus:ring-blue-500"
-                  rows={3}
-                  placeholder="Any thoughts about the explanations?"
-                />
-              </div>
-
-              <button
-                onClick={handleFinalSubmit}
-                disabled={!isFinalComplete}
-                className={`w-full py-4 rounded-xl font-bold text-lg transition ${
-                  isFinalComplete
-                    ? "bg-gradient-to-r from-green-500 to-emerald-500 text-white hover:shadow-lg"
-                    : "bg-gray-700 text-gray-500 cursor-not-allowed"
-                }`}
-              >
-                Submit Survey ✓
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
+  return null;
 }
