@@ -19,35 +19,34 @@ export default function RatingScale({
 }: RatingScaleProps) {
   return (
     <div className="mb-6">
-      <div className="mb-2">
-        <label className="font-medium text-gray-900">{label}</label>
+      <div className="mb-3">
+        <label className="font-semibold text-white text-lg">{label}</label>
         {description && (
-          <p className="text-sm text-gray-500 mt-1">{description}</p>
+          <p className="text-sm text-gray-400 mt-1">{description}</p>
         )}
       </div>
       
-      <div className="flex items-center gap-2">
-        <span className="text-xs text-gray-400 w-24 text-right">{minLabel}</span>
+      <div className="flex items-center gap-3">
+        <span className="text-xs text-gray-500 w-20 text-right">{minLabel}</span>
         <div className="flex gap-2">
           {[1, 2, 3, 4, 5, 6, 7].map((num) => (
             <button
               key={num}
               onClick={() => onChange(num)}
               className={`
-                w-10 h-10 rounded-full border-2 flex items-center justify-center
-                transition-all font-medium
+                w-11 h-11 rounded-full border-2 flex items-center justify-center
+                transition-all font-bold text-lg
                 ${value === num
-                  ? "bg-blue-500 border-blue-500 text-white"
-                  : "border-gray-300 text-gray-600 hover:border-blue-400 hover:bg-blue-50"}
+                  ? "bg-blue-500 border-blue-500 text-white scale-110 shadow-lg shadow-blue-500/30"
+                  : "border-gray-600 text-gray-400 hover:border-blue-400 hover:text-blue-400 hover:scale-105"}
               `}
             >
               {num}
             </button>
           ))}
         </div>
-        <span className="text-xs text-gray-400 w-24">{maxLabel}</span>
+        <span className="text-xs text-gray-500 w-20">{maxLabel}</span>
       </div>
     </div>
   );
 }
-
