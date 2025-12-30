@@ -56,16 +56,11 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# CORS configuration
+# CORS configuration - allow all origins for user study
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "https://gpe-user-study.onrender.com",
-        "https://*.onrender.com",
-    ],
-    allow_credentials=True,
+    allow_origins=["*"],  # Allow all origins for the user study
+    allow_credentials=False,  # Must be False when allow_origins=["*"]
     allow_methods=["*"],
     allow_headers=["*"],
 )
