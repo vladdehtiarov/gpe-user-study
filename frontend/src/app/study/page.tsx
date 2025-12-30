@@ -52,6 +52,9 @@ export default function StudyPage() {
   const [cases, setCases] = useState<CreditApplication[]>(defaultCases);
   const [results, setResults] = useState<CaseResult[]>([]);
   
+  // Session ID for tracking
+  const [sessionId, setSessionId] = useState<string>("");
+  
   // Analysis progress
   const [currentCase, setCurrentCase] = useState(0);
   const [currentMethod, setCurrentMethod] = useState("");
@@ -69,6 +72,26 @@ export default function StudyPage() {
     feedback: "",
   });
 
+  // Create session on mount
+  const createSession = async () => {
+    try {
+      const response = await fetch(`${API_URL}/api/survey/session`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_agent: navigator.userAgent }),
+      });
+      const data = await response.json();
+      setSessionId(data.session_id);
+      return data.session_id;
+    } catch (error) {
+      console.error("Failed to create session:", error);
+      // Generate fallback session ID
+      const fallbackId = `local-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+      setSessionId(fallbackId);
+      return fallbackId;
+    }
+  };
+
   const updateCase = (index: number, field: keyof CreditApplication, value: number | string) => {
     const newCases = [...cases];
     newCases[index] = { ...newCases[index], [field]: value };
@@ -79,6 +102,12 @@ export default function StudyPage() {
     setPhase("analyzing");
     setAnalysisProgress([]);
     const newResults: CaseResult[] = [];
+    
+    // Create session first
+    setAnalysisProgress(["🔐 Creating study session..."]);
+    const sid = await createSession();
+    await new Promise(r => setTimeout(r, 300));
+    setAnalysisProgress(prev => [...prev, `✅ Session created: ${sid.substring(0, 8)}...`]);
     
     for (let i = 0; i < cases.length; i++) {
       setCurrentCase(i + 1);
@@ -135,16 +164,37 @@ export default function StudyPage() {
     setPhase("rating");
   };
 
-  const submitRating = () => {
+  const submitRating = async () => {
     const result = results[ratingCase];
     const methods = Object.keys(result.explanations);
     const method = methods[ratingMethod];
     
-    setAllRatings([...allRatings, {
+    const ratingData = {
       caseId: ratingCase + 1,
       method,
       ...ratings,
-    }]);
+    };
+    
+    setAllRatings([...allRatings, ratingData]);
+    
+    // Send rating to backend
+    try {
+      await fetch(`${API_URL}/api/survey/rating`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          session_id: sessionId,
+          scenario_id: ratingCase + 1,
+          method: method,
+          clarity: ratings.clarity || 4,
+          confidence: ratings.clarity || 4, // Use clarity as proxy
+          trust: ratings.trust || 4,
+          actionability: ratings.trust || 4, // Use trust as proxy
+        }),
+      });
+    } catch (error) {
+      console.error("Failed to submit rating:", error);
+    }
     
     setRatings({ clarity: null, trust: null });
     
@@ -159,10 +209,47 @@ export default function StudyPage() {
     }
   };
 
-  const submitFinal = () => {
-    // In real implementation, send to backend
-    console.log("Ratings:", allRatings);
-    console.log("Final:", finalSurvey);
+  const submitFinal = async () => {
+    // Calculate ranks from all ratings
+    const methodScores: Record<string, number[]> = { gpe: [], lime: [], anchors: [] };
+    allRatings.forEach(r => {
+      if (methodScores[r.method]) {
+        methodScores[r.method].push((r.clarity || 4) + (r.trust || 4));
+      }
+    });
+    
+    const avgScores: Record<string, number> = {};
+    Object.keys(methodScores).forEach(m => {
+      const scores = methodScores[m];
+      avgScores[m] = scores.length > 0 ? scores.reduce((a, b) => a + b, 0) / scores.length : 0;
+    });
+    
+    // Convert to ranks (1=best, 3=worst)
+    const sorted = Object.entries(avgScores).sort((a, b) => b[1] - a[1]);
+    const ranks: Record<string, number> = {};
+    sorted.forEach(([method], idx) => {
+      ranks[method] = idx + 1;
+    });
+    
+    // Send final survey to backend
+    try {
+      await fetch(`${API_URL}/api/survey/final`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          session_id: sessionId,
+          gpe_rank: ranks.gpe || 2,
+          lime_rank: ranks.lime || 2,
+          anchors_rank: ranks.anchors || 2,
+          preferred_method: finalSurvey.preferred_method || sorted[0]?.[0] || "gpe",
+          feedback: finalSurvey.feedback || "",
+        }),
+      });
+      console.log("✅ Survey submitted successfully!");
+    } catch (error) {
+      console.error("Failed to submit survey:", error);
+    }
+    
     setPhase("complete");
   };
 
