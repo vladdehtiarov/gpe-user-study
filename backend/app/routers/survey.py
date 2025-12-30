@@ -129,6 +129,77 @@ async def get_study_results(db: Session = Depends(get_db)):
     }
 
 
+@router.get("/results/detailed")
+async def get_detailed_results(db: Session = Depends(get_db)):
+    """Get all raw data (for detailed analysis)."""
+    sessions = db.query(StudySession).all()
+    ratings = db.query(ExplanationRating).all()
+    final_surveys = db.query(FinalSurvey).all()
+    
+    return {
+        'sessions': [
+            {
+                'session_id': s.session_id,
+                'created_at': s.created_at.isoformat() if s.created_at else None,
+                'completed_at': s.completed_at.isoformat() if s.completed_at else None
+            }
+            for s in sessions
+        ],
+        'ratings': [
+            {
+                'session_id': r.session_id,
+                'scenario_id': r.scenario_id,
+                'method': r.method,
+                'clarity': r.clarity,
+                'confidence': r.confidence,
+                'trust': r.trust,
+                'actionability': r.actionability,
+                'view_time_ms': r.view_time_ms,
+                'created_at': r.created_at.isoformat() if r.created_at else None
+            }
+            for r in ratings
+        ],
+        'final_surveys': [
+            {
+                'session_id': f.session_id,
+                'gpe_rank': f.gpe_rank,
+                'lime_rank': f.lime_rank,
+                'anchors_rank': f.anchors_rank,
+                'preferred_method': f.preferred_method,
+                'age_group': f.age_group,
+                'education': f.education,
+                'ml_familiarity': f.ml_familiarity,
+                'feedback': f.feedback,
+                'created_at': f.created_at.isoformat() if f.created_at else None
+            }
+            for f in final_surveys
+        ]
+    }
+
+
+@router.get("/results/export")
+async def export_results_csv(db: Session = Depends(get_db)):
+    """Export results as CSV-ready JSON."""
+    ratings = db.query(ExplanationRating).all()
+    
+    # Flatten ratings for CSV export
+    rows = []
+    for r in ratings:
+        rows.append({
+            'session_id': r.session_id,
+            'scenario_id': r.scenario_id,
+            'method': r.method,
+            'clarity': r.clarity,
+            'confidence': r.confidence,
+            'trust': r.trust,
+            'actionability': r.actionability,
+            'avg_rating': (r.clarity + r.confidence + r.trust + r.actionability) / 4,
+            'view_time_ms': r.view_time_ms
+        })
+    
+    return {'data': rows, 'count': len(rows)}
+
+
 @router.on_event("startup")
 async def startup():
     """Initialize database on startup."""
